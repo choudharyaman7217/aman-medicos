@@ -56,6 +56,34 @@ async function loadData() {
   }
 }
 
+function renderExpiryAlerts() {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  const alerts = medicines.filter(m => {
+    if (!m.expiry || Number(m.stock) <= 0) return false;
+
+    const expiryDate = new Date(m.expiry + "T00:00:00");
+    const daysLeft = Math.ceil(
+      (expiryDate - today) / (1000 * 60 * 60 * 24)
+    );
+
+    return daysLeft <= 30;
+  });
+
+  $("expiryAlerts").innerHTML = alerts.map(m => {
+    const expiryDate = new Date(m.expiry + "T00:00:00");
+    const daysLeft = Math.ceil(
+      (expiryDate - today) / (1000 * 60 * 60 * 24)
+    );
+
+    if (daysLeft < 0) {
+      return `<p style="color:red;">Expired: ${safe(m.name)} | Batch: ${safe(m.batch || "-")}</p>`;
+    }
+
+    return `<p style="color:#b36b00;">Expiring Soon: ${safe(m.name)} | Batch: ${safe(m.batch || "-")} | ${daysLeft} days left</p>`;
+  }).join("");
+}
 function renderSummary(data) {
   $("totalMedicines").textContent = data.totalMedicines ?? 0;
   $("totalStock").textContent = data.totalStock ?? 0;
