@@ -199,6 +199,42 @@ app.put('/api/medicines/:id', async (req, res) => {
   }
 });
 
+app.post('/api/medicines/:id/add-stock', async (req, res) => {
+  const { quantity } = req.body;
+  const amount = Number(quantity);
+
+  if (!Number.isInteger(amount) || amount <= 0) {
+    return res.status(400).json({ message: 'Sahi stock quantity enter karein.' });
+  }
+
+  try {
+    const medicine = await dbGet(
+      'SELECT * FROM medicines WHERE id = ?',
+      [req.params.id]
+    );
+
+    if (!medicine) {
+      return res.status(404).json({ message: 'Medicine nahi mili.' });
+    }
+
+    await dbRun(
+      'UPDATE medicines SET stock = stock + ? WHERE id = ?',
+      [amount, req.params.id]
+    );
+
+    const updated = await dbGet(
+      'SELECT * FROM medicines WHERE id = ?',
+      [req.params.id]
+    );
+
+    res.json(updated);
+  } catch (error) {
+    res.status(500).json({
+      message: 'Stock update nahi hua.',
+      error: error.message
+    });
+  }
+});
 app.delete('/api/medicines/:id', async (req, res) => {
   try {
     await dbRun('DELETE FROM medicines WHERE id = ?', [req.params.id]);
