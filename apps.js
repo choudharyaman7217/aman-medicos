@@ -94,6 +94,7 @@ function renderSummary(data) {
 
 function renderMedicines() {
   const groups = {};
+  const searchText = ($("medicineSearch").value || "").trim().toLowerCase();
 
   medicines.forEach(m => {
     const key = m.name.trim().toLowerCase();
@@ -110,7 +111,11 @@ function renderMedicines() {
     groups[key].batches.push(m);
   });
 
-  $("medicineTableBody").innerHTML = Object.values(groups).map(group => `
+  const filteredGroups = Object.values(groups).filter(group =>
+    group.name.toLowerCase().includes(searchText)
+  );
+
+  $("medicineTableBody").innerHTML = filteredGroups.map(group => `
     <tr>
       <td>
         <strong>${safe(group.name)}</strong>
@@ -120,6 +125,7 @@ function renderMedicines() {
             Batch: ${safe(b.batch || "-")}
             | Expiry: ${safe(b.expiry || "-")}
             | Stock: ${b.stock}
+            <button class="secondary-btn" data-add-stock="${b.id}">+ Add Stock</button>
             <button class="secondary-btn" data-delete="${b.id}">Delete Batch</button>
           </small><br>
         `).join("")}
@@ -127,11 +133,10 @@ function renderMedicines() {
       <td>${group.stock}</td>
       <td>${money(group.batches[0].selling_price)}</td>
       <td>${safe(group.batches.map(b => b.expiry || "-").join(", "))}</td>
-      <td> अलग-अलग Batch </td>
+      <td>अलग-अलग Batch</td>
     </tr>
   `).join("");
 }
-
 function renderCustomers() {
   $("customerList").innerHTML = customers.map(c => `
     <li>${safe(c.name)} - ${safe(c.phone || "")}</li>
