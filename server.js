@@ -251,73 +251,140 @@ app.get('/api/bills', async (req, res) => {
 });
 
 app.post('/api/bills', async (req, res) => {
-  const { customerId, customerName, items, discount = 0, paidAmount = 0, paymentStatus = 'Paid' } = req.body;
+  const {
+    customerId,
+    customerName,
+    items,
+    discount = 0,
+    paidAmount = 0,
+    paymentStatus = 'Paid'
+  } = req.body;
 
   if (!Array.isArray(items) || items.length === 0) {
-    return res.status(400).json({ message: 'At least one medicine is required for billing.' });
+    return res.status(400).json({
+      message: 'At least one medicine is required for billing.'
+    });
   }
 
   try {
     const processedItems = [];
+    const stockUpdates = [];
     let subtotal = 0;
+    const today = new Date().toISOString().slice(0, 10);
 
     for (const item of items) {
-      const medicine = await dbGet('SELECT * FROM medicines WHERE id = ?', [item.medicineId]);
-      if (!medicine) {
-        throw new Error(`Medicine not found: ${item.name || 'Unknown medicine'}`);
+      const quantity = Number(item.quantity);
+
+      if (!Number.isInteger(quantity) || quantity <= 0) {
+        throw new Error('Medicine quantity must be a positive whole number.');
       }
 
-      if (Number(medicine.stock) < Number(item.quantity)) {
-        throw new Error(`${medicine.name} has insufficient stock. Available: ${medicine.stock}`);
+      const selectedMedicine = await dbGet(
+        'SELECT * FROM medicines WHERE id = ?',
+        [item.medicineId]
+      );
+
+      if (!selectedMedicine) {
+        throw new Error('Medicine not found.');
       }
 
-      const lineTotal = Number(item.quantity) * Number(medicine.selling_price);
-      subtotal += lineTotal;
+      const batches = await dbAll(
+        `SELECT * FROM medicines
+         WHERE LOWER(TRIM(name)) = LOWER(TRIM(?))
+         ORDER BY
+           CASE WHEN expiry IS NULL OR expiry = '' THEN 1 ELSE 0 END,
+           expiry ASC,
+           id ASC`,
+        [selectedMedicine.name]
+      );
 
-      processedItems.push({
-        medicineId: medicine.id,
-        name: medicine.name,
-        generic: medicine.generic,
-        batch: medicine.batch,
-        expiry: medicine.expiry,
-        quantity: Number(item.quantity),
-        sellingPrice: Number(medicine.selling_price),
-        lineTotal,
-      });
+      let remaining = quantity;
+
+      for (const batch of batches) {
+        if (remaining <= 0) break;
+
+        const expiry = batch.expiry || '';
+
+        if (expiry && expiry < today) continue;
+
+        const available = Number(batch.stock) || 0;
+        if (available <= 0) continue;
+
+        const used = Math.min(remaining, available);
+        const lineTotal = used * Number(selectedMedicine.selling_price);
+
+        processedItems.push({
+          medicineId: batch.id,
+          name: batch.name,
+          generic: batch.generic,
+          batch: batch.batch,
+          expiry: batch.expiry,
+          quantity: used,
+          sellingPrice: Number(selectedMedicine.selling_price),
+          lineTotal
+        });
+
+        stockUpdates.push({
+          id: batch.id,
+          quantity: used
+        });
+
+        subtotal += lineTotal;
+        remaining -= used;
+      }
+
+      if (remaining > 0) {
+        throw new Error(
+          `${selectedMedicine.name}: sufficient non-expired stock is not available.`
+        );
+      }
     }
 
-    const taxRate = 0.05;
-    const tax = subtotal * taxRate;
+    const tax = subtotal * 0.05;
     const discountAmount = Number(discount || 0);
     const total = subtotal + tax - discountAmount;
-    const finalAmount = total;
 
-    for (const item of processedItems) {
-      await dbRun('UPDATE medicines SET stock = stock - ? WHERE id = ?', [item.quantity, item.medicineId]);
+    if (discountAmount < 0 || discountAmount > subtotal + tax) {
+      throw new Error('Invalid discount amount.');
+    }
+
+    for (const update of stockUpdates) {
+      await dbRun(
+        'UPDATE medicines SET stock = stock - ? WHERE id = ?',
+        [update.quantity, update.id]
+      );
     }
 
     const billResult = await dbRun(
-      `INSERT INTO bills (customer_id, customer_name, bill_date, items, subtotal, discount, tax, total, paid_amount, payment_status)
+      `INSERT INTO bills
+       (customer_id, customer_name, bill_date, items, subtotal, discount, tax, total, paid_amount, payment_status)
        VALUES (?, ?, date('now'), ?, ?, ?, ?, ?, ?, ?)`,
       [
         customerId || null,
         customerName || 'Walk-in Customer',
         JSON.stringify(processedItems),
-        Number(subtotal),
-        Number(discountAmount),
-        Number(tax),
-        Number(finalAmount),
-        Number(paidAmount || finalAmount),
-        paymentStatus || 'Paid',
+        subtotal,
+        discountAmount,
+        tax,
+        total,
+        Number(paidAmount || total),
+        paymentStatus || 'Paid'
       ]
     );
 
-    const savedBill = await dbGet('SELECT * FROM bills WHERE id = ?', [billResult.id]);
+    const savedBill = await dbGet(
+      'SELECT * FROM bills WHERE id = ?',
+      [billResult.id]
+    );
+
     savedBill.items = JSON.parse(savedBill.items || '[]');
 
     res.status(201).json(savedBill);
   } catch (error) {
-    res.status(500).json({ message: 'Failed to save bill', error: error.message });
+    res.status(500).json({
+      message: 'Failed to save bill',
+      error: error.message
+    });
   }
 });
 
