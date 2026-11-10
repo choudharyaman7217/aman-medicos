@@ -233,6 +233,30 @@ $("medicineTableBody").addEventListener("click", async (event) => {
   }
 });
 
+$("medicineTableBody").addEventListener("click", async (event) => {
+  const button = event.target.closest("button[data-add-stock]");
+  if (!button) return;
+
+  const id = button.dataset.addStock;
+  const quantity = Number(prompt("Kitni tablets stock mein add karni hain?"));
+
+  if (!Number.isInteger(quantity) || quantity <= 0) {
+    alert("Sahi quantity enter karein.");
+    return;
+  }
+
+  try {
+    await api("/medicines/" + id + "/add-stock", {
+      method: "POST",
+      body: JSON.stringify({ quantity })
+    });
+
+    alert("Stock successfully badh gaya!");
+    await loadData();
+  } catch (error) {
+    alert("Stock update nahi hua: " + error.message);
+  }
+});
 $("customerForm").addEventListener("submit", async (event) => {
   event.preventDefault();
 
