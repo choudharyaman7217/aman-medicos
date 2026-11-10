@@ -46,6 +46,7 @@ async function loadData() {
     customers = results[1];
 
     renderMedicines();
+    renderExpiryAlerts();
     renderCustomers();
     renderMedicineOptions();
     renderCustomerOptions();
