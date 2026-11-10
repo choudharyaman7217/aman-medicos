@@ -234,11 +234,21 @@ $("addToBillBtn").addEventListener("click", () => {
     return;
   }
 
+  const today = new Date().toISOString().slice(0, 10);
+
+  const availableStock = medicines
+    .filter(m =>
+      m.name.trim().toLowerCase() === medicine.name.trim().toLowerCase() &&
+      Number(m.stock) > 0 &&
+      (!m.expiry || m.expiry >= today)
+    )
+    .reduce((sum, m) => sum + Number(m.stock), 0);
+
   const existing = billItems.find(item => item.medicineId === id);
   const alreadyAdded = existing ? existing.quantity : 0;
 
-  if (alreadyAdded + quantity > Number(medicine.stock)) {
-    alert("Itna stock available nahi hai.");
+  if (alreadyAdded + quantity > availableStock) {
+    alert("Itna stock available nahi hai. Available: " + availableStock);
     return;
   }
 
@@ -255,7 +265,6 @@ $("addToBillBtn").addEventListener("click", () => {
 
   renderBillItems();
 });
-
 function renderBillItems() {
   $("billItemsBody").innerHTML = billItems.map((item, index) => `
     <tr>
