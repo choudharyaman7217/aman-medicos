@@ -186,7 +186,7 @@ function renderBills() {
       <tr>
         <td>${safe(b.id)}</td>
         <td>${safe(b.customer_name || b.customerName || "-")}</td>
-        <td>${safe(b.created_at || b.date || "-")}</td>
+        <td>${safe(b.bill_date || b.created_at || b.date || "-")}</td>
         <td>${Array.isArray(b.items) ? b.items.length : 0}</td>
         <td>${money(b.total)}</td>
       </tr>
