@@ -246,8 +246,13 @@ app.delete('/api/medicines/:id', async (req, res) => {
 
 app.get('/api/customers', async (req, res) => {
   try {
-    const rows = await dbAll('SELECT * FROM customers ORDER BY name ASC');
-    res.json(rows);
+    const { data, error } = await supabase
+      .from('customers')
+      .select('*')
+      .order('name', { ascending: true });
+
+    if (error) throw error;
+    res.json(data);
   } catch (error) {
     res.status(500).json({ message: 'Failed to fetch customers', error: error.message });
   }
@@ -261,28 +266,36 @@ app.post('/api/customers', async (req, res) => {
   }
 
   try {
-    const result = await dbRun(
-      'INSERT INTO customers (name, phone, address) VALUES (?, ?, ?)',
-      [name, phone || '', address || '']
-    );
+    const { data, error } = await supabase
+      .from('customers')
+      .insert([{
+        name,
+        phone: phone || '',
+        address: address || ''
+      }])
+      .select()
+      .single();
 
-    const inserted = await dbGet('SELECT * FROM customers WHERE id = ?', [result.id]);
-    res.status(201).json(inserted);
+    if (error) throw error;
+    res.status(201).json(data);
   } catch (error) {
     res.status(500).json({ message: 'Failed to add customer', error: error.message });
   }
 });
-
 app.get('/api/bills', async (req, res) => {
   try {
-    const rows = await dbAll('SELECT * FROM bills ORDER BY id DESC');
-    const mappedRows = rows.map((bill) => ({
-      ...bill,
-      items: JSON.parse(bill.items || '[]'),
-    }));
-    res.json(mappedRows);
+    const { data, error } = await supabase
+      .from('bills')
+      .select('*')
+      .order('id', { ascending: false });
+
+    if (error) throw error;
+    res.json(data);
   } catch (error) {
-    res.status(500).json({ message: 'Failed to fetch bills', error: error.message });
+    res.status(500).json({
+      message: 'Failed to fetch bills',
+      error: error.message
+    });
   }
 });
 
@@ -315,24 +328,29 @@ app.post('/api/bills', async (req, res) => {
         throw new Error('Medicine quantity must be a positive whole number.');
       }
 
-      const selectedMedicine = await dbGet(
-        'SELECT * FROM medicines WHERE id = ?',
-        [item.medicineId]
-      );
+      const { data: selectedMedicine, error: findError } = await supabase
+        .from('medicines')
+        .select('*')
+        .eq('id', item.medicineId)
+        .maybeSingle();
 
-      if (!selectedMedicine) {
-        throw new Error('Medicine not found.');
-      }
+      if (findError) throw findError;
+      if (!selectedMedicine) throw new Error('Medicine not found.');
 
-      const batches = await dbAll(
-        `SELECT * FROM medicines
-         WHERE LOWER(TRIM(name)) = LOWER(TRIM(?))
-         ORDER BY
-           CASE WHEN expiry IS NULL OR expiry = '' THEN 1 ELSE 0 END,
-           expiry ASC,
-           id ASC`,
-        [selectedMedicine.name]
-      );
+      const { data: allMedicines, error: batchError } = await supabase
+        .from('medicines')
+        .select('*');
+
+      if (batchError) throw batchError;
+
+      const batches = allMedicines
+        .filter(m => m.name.trim().toLowerCase() === selectedMedicine.name.trim().toLowerCase())
+        .sort((a, b) => {
+          if (!a.expiry && b.expiry) return 1;
+          if (a.expiry && !b.expiry) return -1;
+          if (a.expiry && b.expiry) return a.expiry.localeCompare(b.expiry);
+          return Number(a.id) - Number(b.id);
+        });
 
       let remaining = quantity;
 
@@ -340,14 +358,14 @@ app.post('/api/bills', async (req, res) => {
         if (remaining <= 0) break;
 
         const expiry = batch.expiry || '';
-
         if (expiry && expiry < today) continue;
 
         const available = Number(batch.stock) || 0;
         if (available <= 0) continue;
 
         const used = Math.min(remaining, available);
-        const lineTotal = used * Number(selectedMedicine.selling_price);
+        const sellingPrice = Number(selectedMedicine.selling_price);
+        const lineTotal = used * sellingPrice;
 
         processedItems.push({
           medicineId: batch.id,
@@ -356,13 +374,13 @@ app.post('/api/bills', async (req, res) => {
           batch: batch.batch,
           expiry: batch.expiry,
           quantity: used,
-          sellingPrice: Number(selectedMedicine.selling_price),
+          sellingPrice,
           lineTotal
         });
 
         stockUpdates.push({
           id: batch.id,
-          quantity: used
+          stock: available - used
         });
 
         subtotal += lineTotal;
@@ -380,40 +398,41 @@ app.post('/api/bills', async (req, res) => {
     const discountAmount = Number(discount || 0);
     const total = subtotal + tax - discountAmount;
 
-    if (discountAmount < 0 || discountAmount > subtotal + tax) {
+    if (
+      !Number.isFinite(discountAmount) ||
+      discountAmount < 0 ||
+      discountAmount > subtotal + tax
+    ) {
       throw new Error('Invalid discount amount.');
     }
 
     for (const update of stockUpdates) {
-      await dbRun(
-        'UPDATE medicines SET stock = stock - ? WHERE id = ?',
-        [update.quantity, update.id]
-      );
+      const { error } = await supabase
+        .from('medicines')
+        .update({ stock: update.stock })
+        .eq('id', update.id);
+
+      if (error) throw error;
     }
 
-    const billResult = await dbRun(
-      `INSERT INTO bills
-       (customer_id, customer_name, bill_date, items, subtotal, discount, tax, total, paid_amount, payment_status)
-       VALUES (?, ?, date('now'), ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        customerId || null,
-        customerName || 'Walk-in Customer',
-        JSON.stringify(processedItems),
+    const { data: savedBill, error: billError } = await supabase
+      .from('bills')
+      .insert([{
+        customer_id: customerId || null,
+        customer_name: customerName || 'Walk-in Customer',
+        bill_date: today,
+        items: processedItems,
         subtotal,
-        discountAmount,
+        discount: discountAmount,
         tax,
         total,
-        Number(paidAmount || total),
-        paymentStatus || 'Paid'
-      ]
-    );
+        paid_amount: Number(paidAmount ?? total),
+        payment_status: paymentStatus || 'Paid'
+      }])
+      .select()
+      .single();
 
-    const savedBill = await dbGet(
-      'SELECT * FROM bills WHERE id = ?',
-      [billResult.id]
-    );
-
-    savedBill.items = JSON.parse(savedBill.items || '[]');
+    if (billError) throw billError;
 
     res.status(201).json(savedBill);
   } catch (error) {
@@ -423,18 +442,10 @@ app.post('/api/bills', async (req, res) => {
     });
   }
 });
-
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-initializeDatabase()
-  .then(() => {
-    app.listen(PORT, () => {
-      console.log(`Aman Medicos server running at http://localhost:${PORT}`);
-    });
-  })
-  .catch((error) => {
-    console.error('Failed to initialize database:', error);
-    process.exit(1);
-  });
+app.listen(PORT, () => {
+  console.log(`Aman Medicos server running on port ${PORT}`);
+});
