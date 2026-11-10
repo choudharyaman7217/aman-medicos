@@ -1,233 +1,214 @@
 const express = require('express');
 const cors = require('cors');
-const fs = require('fs');
 const path = require('path');
-const sqlite3 = require('sqlite3').verbose();
+const { createClient } = require('@supabase/supabase-js');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-const dataDir = path.join(__dirname, 'data');
-if (!fs.existsSync(dataDir)) {
-  fs.mkdirSync(dataDir, { recursive: true });
-}
-
-const db = new sqlite3.Database(path.join(dataDir, 'aman_medicos.db'), (err) => {
-  if (err) {
-    console.error('Database connection failed:', err.message);
-  } else {
-    console.log('Database connected');
-  }
-});
-
-function dbRun(sql, params = []) {
-  return new Promise((resolve, reject) => {
-    db.run(sql, params, function (err) {
-      if (err) {
-        reject(err);
-        return;
-      }
-      resolve({ id: this.lastID, changes: this.changes });
-    });
-  });
-}
-
-function dbGet(sql, params = []) {
-  return new Promise((resolve, reject) => {
-    db.get(sql, params, (err, row) => {
-      if (err) {
-        reject(err);
-        return;
-      }
-      resolve(row);
-    });
-  });
-}
-
-function dbAll(sql, params = []) {
-  return new Promise((resolve, reject) => {
-    db.all(sql, params, (err, rows) => {
-      if (err) {
-        reject(err);
-        return;
-      }
-      resolve(rows);
-    });
-  });
-}
-
-async function initializeDatabase() {
-  await dbRun(`
-    CREATE TABLE IF NOT EXISTS medicines (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      name TEXT NOT NULL,
-      generic TEXT,
-      category TEXT,
-      batch TEXT,
-      expiry TEXT,
-      cost_price REAL DEFAULT 0,
-      selling_price REAL DEFAULT 0,
-      stock INTEGER DEFAULT 0,
-      reorder_level INTEGER DEFAULT 5
-    )
-  `);
-
-  await dbRun(`
-    CREATE TABLE IF NOT EXISTS customers (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      name TEXT NOT NULL,
-      phone TEXT,
-      address TEXT
-    )
-  `);
-
-  await dbRun(`
-    CREATE TABLE IF NOT EXISTS bills (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      customer_id INTEGER,
-      customer_name TEXT,
-      bill_date TEXT DEFAULT CURRENT_DATE,
-      items TEXT NOT NULL,
-      subtotal REAL DEFAULT 0,
-      discount REAL DEFAULT 0,
-      tax REAL DEFAULT 0,
-      total REAL DEFAULT 0,
-      paid_amount REAL DEFAULT 0,
-      payment_status TEXT DEFAULT 'Paid'
-    )
-  `);
-
-  const defaultCustomer = await dbGet('SELECT id FROM customers WHERE phone = ?', ['walk-in']);
-  if (!defaultCustomer) {
-    await dbRun(
-      'INSERT INTO customers (name, phone, address) VALUES (?, ?, ?)',
-      ['Walk-in Customer', 'walk-in', 'General']
-    );
-  }
-}
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SECRET_KEY
+);
 
 app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
+// ===============================
+// DASHBOARD SUMMARY
+// ===============================
+
 app.get('/api/summary', async (req, res) => {
   try {
-    const medicines = await dbAll('SELECT COUNT(*) as total_medicines, SUM(stock) as total_stock FROM medicines');
-    const revenue = await dbGet('SELECT COALESCE(SUM(total), 0) as total_revenue FROM bills');
-    const lowStock = await dbGet('SELECT COUNT(*) as low_stock FROM medicines WHERE stock <= reorder_level');
-    const bills = await dbGet('SELECT COUNT(*) as total_bills FROM bills');
+    const { data: medicines, error: medicineError } = await supabase
+      .from('medicines')
+      .select('id, stock, reorder_level');
+
+    if (medicineError) throw medicineError;
+
+    const { data: bills, error: billError } = await supabase
+      .from('bills')
+      .select('total');
+
+    if (billError) throw billError;
+
+    const totalStock = medicines.reduce(
+      (sum, item) => sum + Number(item.stock || 0), 0
+    );
+
+    const totalRevenue = bills.reduce(
+      (sum, item) => sum + Number(item.total || 0), 0
+    );
+
+    const lowStock = medicines.filter(
+      item => Number(item.stock || 0) <= Number(item.reorder_level || 0)
+    ).length;
 
     res.json({
-      totalMedicines: medicines[0]?.total_medicines || 0,
-      totalStock: medicines[0]?.total_stock || 0,
-      totalRevenue: Number(revenue?.total_revenue || 0),
-      lowStock: lowStock?.low_stock || 0,
-      totalBills: bills?.total_bills || 0,
+      totalMedicines: medicines.length,
+      totalStock,
+      totalRevenue,
+      lowStock,
+      totalBills: bills.length
     });
   } catch (error) {
-    res.status(500).json({ message: 'Failed to fetch summary', error: error.message });
+    res.status(500).json({
+      message: 'Failed to fetch summary',
+      error: error.message
+    });
   }
 });
 
+// ===============================
+// MEDICINES
+// ===============================
+
 app.get('/api/medicines', async (req, res) => {
   try {
-    const rows = await dbAll('SELECT * FROM medicines ORDER BY name ASC');
-    res.json(rows);
+    const { data, error } = await supabase
+      .from('medicines')
+      .select('*')
+      .order('name', { ascending: true });
+
+    if (error) throw error;
+    res.json(data);
   } catch (error) {
-    res.status(500).json({ message: 'Failed to fetch medicines', error: error.message });
+    res.status(500).json({
+      message: 'Failed to fetch medicines',
+      error: error.message
+    });
   }
 });
 
 app.post('/api/medicines', async (req, res) => {
-  const { name, generic, category, batch, expiry, costPrice, sellingPrice, stock, reorderLevel } = req.body;
+  const {
+    name,
+    generic,
+    category,
+    batch,
+    expiry,
+    costPrice,
+    sellingPrice,
+    stock,
+    reorderLevel
+  } = req.body;
 
-  if (!name || !sellingPrice || !stock) {
-    return res.status(400).json({ message: 'Medicine name, selling price, and stock are required.' });
+  if (
+    !name ||
+    sellingPrice === undefined ||
+    sellingPrice === '' ||
+    stock === undefined ||
+    stock === ''
+  ) {
+    return res.status(400).json({
+      message: 'Medicine name, selling price, and stock are required.'
+    });
   }
 
   try {
-    const result = await dbRun(
-      `INSERT INTO medicines (name, generic, category, batch, expiry, cost_price, selling_price, stock, reorder_level)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
+    const { data, error } = await supabase
+      .from('medicines')
+      .insert([{
         name,
-        generic || '',
-        category || '',
-        batch || '',
-        expiry || '',
-        Number(costPrice || 0),
-        Number(sellingPrice),
-        Number(stock),
-        Number(reorderLevel || 5),
-      ]
-    );
+        generic: generic || '',
+        category: category || '',
+        batch: batch || '',
+        expiry: expiry || '',
+        cost_price: Number(costPrice || 0),
+        selling_price: Number(sellingPrice),
+        stock: Number(stock),
+        reorder_level: Number(reorderLevel || 5)
+      }])
+      .select()
+      .single();
 
-    const inserted = await dbGet('SELECT * FROM medicines WHERE id = ?', [result.id]);
-    res.status(201).json(inserted);
+    if (error) throw error;
+    res.status(201).json(data);
   } catch (error) {
-    res.status(500).json({ message: 'Failed to add medicine', error: error.message });
+    res.status(500).json({
+      message: 'Failed to add medicine',
+      error: error.message
+    });
   }
 });
 
 app.put('/api/medicines/:id', async (req, res) => {
-  const { id } = req.params;
-  const { name, generic, category, batch, expiry, costPrice, sellingPrice, stock, reorderLevel } = req.body;
+  const {
+    name,
+    generic,
+    category,
+    batch,
+    expiry,
+    costPrice,
+    sellingPrice,
+    stock,
+    reorderLevel
+  } = req.body;
 
   try {
-    await dbRun(
-      `UPDATE medicines SET
-        name = ?, generic = ?, category = ?, batch = ?, expiry = ?, cost_price = ?, selling_price = ?, stock = ?, reorder_level = ?
-        WHERE id = ?`,
-      [
+    const { data, error } = await supabase
+      .from('medicines')
+      .update({
         name,
-        generic || '',
-        category || '',
-        batch || '',
-        expiry || '',
-        Number(costPrice || 0),
-        Number(sellingPrice),
-        Number(stock),
-        Number(reorderLevel || 5),
-        id,
-      ]
-    );
+        generic: generic || '',
+        category: category || '',
+        batch: batch || '',
+        expiry: expiry || '',
+        cost_price: Number(costPrice || 0),
+        selling_price: Number(sellingPrice),
+        stock: Number(stock),
+        reorder_level: Number(reorderLevel || 5)
+      })
+      .eq('id', req.params.id)
+      .select()
+      .single();
 
-    const updated = await dbGet('SELECT * FROM medicines WHERE id = ?', [id]);
-    res.json(updated);
+    if (error) throw error;
+    res.json(data);
   } catch (error) {
-    res.status(500).json({ message: 'Failed to update medicine', error: error.message });
+    res.status(500).json({
+      message: 'Failed to update medicine',
+      error: error.message
+    });
   }
 });
 
 app.post('/api/medicines/:id/add-stock', async (req, res) => {
-  const { quantity } = req.body;
-  const amount = Number(quantity);
+  const amount = Number(req.body.quantity);
 
   if (!Number.isInteger(amount) || amount <= 0) {
-    return res.status(400).json({ message: 'Sahi stock quantity enter karein.' });
+    return res.status(400).json({
+      message: 'Sahi stock quantity enter karein.'
+    });
   }
 
   try {
-    const medicine = await dbGet(
-      'SELECT * FROM medicines WHERE id = ?',
-      [req.params.id]
-    );
+    const { data: medicine, error: findError } = await supabase
+      .from('medicines')
+      .select('*')
+      .eq('id', req.params.id)
+      .maybeSingle();
+
+    if (findError) throw findError;
 
     if (!medicine) {
-      return res.status(404).json({ message: 'Medicine nahi mili.' });
+      return res.status(404).json({
+        message: 'Medicine nahi mili.'
+      });
     }
 
-    await dbRun(
-      'UPDATE medicines SET stock = stock + ? WHERE id = ?',
-      [amount, req.params.id]
-    );
+    const { data, error } = await supabase
+      .from('medicines')
+      .update({
+        stock: Number(medicine.stock || 0) + amount
+      })
+      .eq('id', req.params.id)
+      .select()
+      .single();
 
-    const updated = await dbGet(
-      'SELECT * FROM medicines WHERE id = ?',
-      [req.params.id]
-    );
-
-    res.json(updated);
+    if (error) throw error;
+    res.json(data);
   } catch (error) {
     res.status(500).json({
       message: 'Stock update nahi hua.',
@@ -235,14 +216,30 @@ app.post('/api/medicines/:id/add-stock', async (req, res) => {
     });
   }
 });
+
 app.delete('/api/medicines/:id', async (req, res) => {
   try {
-    await dbRun('DELETE FROM medicines WHERE id = ?', [req.params.id]);
-    res.json({ message: 'Medicine deleted successfully' });
+    const { error } = await supabase
+      .from('medicines')
+      .delete()
+      .eq('id', req.params.id);
+
+    if (error) throw error;
+
+    res.json({
+      message: 'Medicine deleted successfully'
+    });
   } catch (error) {
-    res.status(500).json({ message: 'Failed to delete medicine', error: error.message });
+    res.status(500).json({
+      message: 'Failed to delete medicine',
+      error: error.message
+    });
   }
 });
+
+// ===============================
+// CUSTOMERS
+// ===============================
 
 app.get('/api/customers', async (req, res) => {
   try {
@@ -254,7 +251,10 @@ app.get('/api/customers', async (req, res) => {
     if (error) throw error;
     res.json(data);
   } catch (error) {
-    res.status(500).json({ message: 'Failed to fetch customers', error: error.message });
+    res.status(500).json({
+      message: 'Failed to fetch customers',
+      error: error.message
+    });
   }
 });
 
@@ -262,7 +262,9 @@ app.post('/api/customers', async (req, res) => {
   const { name, phone, address } = req.body;
 
   if (!name) {
-    return res.status(400).json({ message: 'Customer name is required.' });
+    return res.status(400).json({
+      message: 'Customer name is required.'
+    });
   }
 
   try {
@@ -279,9 +281,17 @@ app.post('/api/customers', async (req, res) => {
     if (error) throw error;
     res.status(201).json(data);
   } catch (error) {
-    res.status(500).json({ message: 'Failed to add customer', error: error.message });
+    res.status(500).json({
+      message: 'Failed to add customer',
+      error: error.message
+    });
   }
 });
+
+// ===============================
+// BILLS
+// ===============================
+
 app.get('/api/bills', async (req, res) => {
   try {
     const { data, error } = await supabase
@@ -319,6 +329,7 @@ app.post('/api/bills', async (req, res) => {
     const processedItems = [];
     const stockUpdates = [];
     let subtotal = 0;
+
     const today = new Date().toISOString().slice(0, 10);
 
     for (const item of items) {
@@ -344,11 +355,16 @@ app.post('/api/bills', async (req, res) => {
       if (batchError) throw batchError;
 
       const batches = allMedicines
-        .filter(m => m.name.trim().toLowerCase() === selectedMedicine.name.trim().toLowerCase())
+        .filter(m =>
+          m.name.trim().toLowerCase() ===
+          selectedMedicine.name.trim().toLowerCase()
+        )
         .sort((a, b) => {
           if (!a.expiry && b.expiry) return 1;
           if (a.expiry && !b.expiry) return -1;
-          if (a.expiry && b.expiry) return a.expiry.localeCompare(b.expiry);
+          if (a.expiry && b.expiry) {
+            return a.expiry.localeCompare(b.expiry);
+          }
           return Number(a.id) - Number(b.id);
         });
 
@@ -442,6 +458,11 @@ app.post('/api/bills', async (req, res) => {
     });
   }
 });
+
+// ===============================
+// FRONTEND
+// ===============================
+
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
