@@ -218,7 +218,7 @@ $("medicineForm").addEventListener("submit", async (event) => {
     alert(error.message);
   }
 });
-
+$("medicineSearch").addEventListener("input", renderMedicines);
 $("medicineTableBody").addEventListener("click", async (event) => {
   const id = event.target.dataset.delete;
   if (!id) return;
