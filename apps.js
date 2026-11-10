@@ -110,13 +110,31 @@ function renderCustomers() {
 }
 
 function renderMedicineOptions() {
-  $("medicineSelect").innerHTML = medicines
-    .filter(m => Number(m.stock) > 0)
-    .map(m => `
-      <option value="${m.id}">
-        ${safe(m.name)} (Stock: ${m.stock})
-      </option>
-    `).join("");
+  const groups = {};
+  const today = new Date().toISOString().slice(0, 10);
+
+  medicines.forEach(m => {
+    const key = m.name.trim().toLowerCase();
+    const expiry = m.expiry || "";
+
+    if (Number(m.stock) <= 0 || (expiry && expiry < today)) return;
+
+    if (!groups[key]) {
+      groups[key] = {
+        id: m.id,
+        name: m.name,
+        stock: 0
+      };
+    }
+
+    groups[key].stock += Number(m.stock) || 0;
+  });
+
+  $("medicineSelect").innerHTML = Object.values(groups).map(m => `
+    <option value="${m.id}">
+      ${safe(m.name)} (Total Stock: ${m.stock})
+    </option>
+  `).join("");
 }
 
 function renderCustomerOptions() {
