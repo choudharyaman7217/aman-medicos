@@ -64,17 +64,41 @@ function renderSummary(data) {
 }
 
 function renderMedicines() {
-  $("medicineTableBody").innerHTML = medicines.map(m => `
+  const groups = {};
+
+  medicines.forEach(m => {
+    const key = m.name.trim().toLowerCase();
+
+    if (!groups[key]) {
+      groups[key] = {
+        name: m.name,
+        stock: 0,
+        batches: []
+      };
+    }
+
+    groups[key].stock += Number(m.stock) || 0;
+    groups[key].batches.push(m);
+  });
+
+  $("medicineTableBody").innerHTML = Object.values(groups).map(group => `
     <tr>
-      <td>${safe(m.name)}</td>
-      <td>${m.stock}</td>
-      <td>${money(m.selling_price)}</td>
-      <td>${safe(m.expiry || "-")}</td>
       <td>
-        <button class="secondary-btn" data-delete="${m.id}">
-          Delete
-        </button>
+        <strong>${safe(group.name)}</strong>
+        <br>
+        ${group.batches.map(b => `
+          <small>
+            Batch: ${safe(b.batch || "-")}
+            | Expiry: ${safe(b.expiry || "-")}
+            | Stock: ${b.stock}
+            <button class="secondary-btn" data-delete="${b.id}">Delete Batch</button>
+          </small><br>
+        `).join("")}
       </td>
+      <td>${group.stock}</td>
+      <td>${money(group.batches[0].selling_price)}</td>
+      <td>${safe(group.batches.map(b => b.expiry || "-").join(", "))}</td>
+      <td> अलग-अलग Batch </td>
     </tr>
   `).join("");
 }
