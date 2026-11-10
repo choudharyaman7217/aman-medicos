@@ -1,4 +1,4 @@
-const API = "/api";
+const API = "https://aman-medicos.onrender.com/api";
 
 let medicines = [];
 let customers = [];
